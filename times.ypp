@@ -1,0 +1,458 @@
+%{
+    #include "shared.h"
+    #include "scope.h"
+    #include "times.tab.hpp"
+    
+    #include <iostream>
+    
+    #include <cstring>
+    #define YYDEBUG 1
+    extern int yylex();
+    
+    extern int yylineno;
+    extern char* yytext;
+    
+    
+
+    int yyerror(char* message);
+    
+    VarType arithmeticParse(VarType lhs, VarType rhs,enum yytokentype op,std::string lname,std::string rname);
+    
+    
+/*=== Globals API ===*/    
+
+	void dumpScope();
+	extern ScopeGlobal* globals;
+	void addScope(ScopeType scopeT);
+    bool addVar(VarType varType, std::string idName);
+    bool varExists(std::string name);
+    VarType varType(std::string name);
+    bool isScopeCurlyWhile();
+    void setCurlyBraces(bool curly);
+    bool isTimeUnit(VarType var);
+
+
+%}
+
+%nonassoc IF
+%nonassoc ELSE
+
+%token COLON
+%token LP
+%token RP
+%token LC
+%token RC
+%token SC
+%token ASSIGN
+
+%token INT
+
+%token SECOND
+%token MINUTE
+%token HOUR
+%token DAY
+%token WEEK
+
+%token PRINT
+%token INPUT
+%token<name> ID
+%token<name> STRING
+%token TRUE
+%token FALSE
+
+%token WHILE
+%token BREAK
+%token BOOL
+%token SWITCH
+%token CASE
+
+
+%token<number> NUM
+
+%right NOT
+
+%left AND OR
+%left SE GE EQ NEQ GT ST
+%left PLUS MINUS
+%left MULT DIV
+
+
+%type<type> Type
+%type<type> TimeUnit
+%type<expInfo> Exp
+%type<scopeData> Statement
+%type<scopeData> Statements
+%type<scopeData> S
+%%
+
+S	: Statements {/*dumpScope();*/}
+	;
+Statements	: Statements Statement {}
+			| Statement {}
+			;
+			
+Statement	: LC { addScope(CURLY_S); } Statements RC {
+									dumpScope();
+								}	/* { ... } */
+			| Type ID SC {
+							if (!addVar($1,$2))
+							{
+								output::errorDef(yylineno,$2.c_str());
+								YYABORT;
+							}
+								
+						 }	   	/* int x; */
+						 
+			| Type ID ASSIGN Exp SC {
+										if (!addVar($1,$2))
+										{
+											output::errorDef(yylineno,$2.c_str());
+											YYABORT;
+										}
+										if (($4.type != $1) &&
+											!((isTimeUnit($4.type) && isTimeUnit($1))))										
+										{
+											output::errorMismatch(yylineno);
+											YYABORT;											
+										}
+										
+									} /* int x = a+b; */
+			| ID ASSIGN Exp SC {
+									VarType temp = varType($1);
+									if (temp == ERROR_T)
+									{
+										output::errorUndef(yylineno,$1.c_str());
+										YYABORT;											
+									}	
+									if (($3.type != temp) &&
+										!((isTimeUnit($3.type) && isTimeUnit(temp))))
+									{
+										output::errorMismatch(yylineno);
+										YYABORT;											
+									}			
+							   }	   /* x = a+b; */
+			| PRINT ID SC {
+							VarType temp = varType($2);
+							if (temp == ERROR_T)
+							{
+								output::errorUndef(yylineno,$2.c_str());
+								YYABORT;															
+							}
+							if (temp == BOOL_T)
+							{
+								output::errorMismatch(yylineno);
+								YYABORT;								
+							}	
+			
+						  }   	   /* print x; */
+			| PRINT STRING SC {}	   /* print "bla bla"; */
+			| INPUT ID SC {
+							VarType temp = varType($2);
+							if (temp == ERROR_T)
+							{
+								output::errorUndef(yylineno,$2.c_str());
+								YYABORT;															
+							}
+							if (temp == BOOL_T)
+							{
+								output::errorMismatch(yylineno);
+								YYABORT;								
+							}			
+						  }  	   /* input x; */
+			
+			
+			| IF ScopeIf LP Exp RP Statement %prec IF {
+												if ($4.type != BOOL_T)
+												{
+													output::errorMismatch(yylineno);
+													YYABORT;												
+												}
+												dumpScope();												
+																								
+											  }   /* if ( x == 4 ) { ...} */
+			| IF ScopeIf LP Exp RP Statement ELSE { dumpScope(); addScope(ELSE_S); } Statement %prec ELSE 											  
+											 {
+												if ($4.type != BOOL_T)
+												{
+													output::errorMismatch(yylineno);
+													YYABORT;												
+												}
+												
+												dumpScope();																										  
+											  } 											  
+			 /* if ( x == 4 ) { ...} else { ... } */ 
+			
+			| WHILE {addScope(WHILE_S);} LP Exp RP Statement {
+											if ($4.type != BOOL_T)
+											{
+												output::errorMismatch(yylineno);
+												YYABORT;												
+											}
+											dumpScope();	
+										} /* while ( x > 2 ) { ... } */
+			| BREAK SC {
+							if (!isScopeCurlyWhile())
+							{
+								output::errorUnexpectedBreak(yylineno);
+								YYABORT;
+							}
+						}  /* break; */
+			| SWITCH LP Exp RP LC CaseList RC {
+											if (!isTimeUnit($3.type))											
+											{
+												output::errorMismatch(yylineno);
+												YYABORT;												
+											}											
+										}
+			;
+
+CaseList	: CaseStat CaseList
+			| CaseStat
+
+CaseStat	: CASE NUM TimeUnit COLON {addScope(CASE_S);} Statement BREAK SC {dumpScope();}
+			
+ScopeIf:
+	/* empty */ { addScope(IF_S); }
+	;		
+			
+/*=== No Globals needed below this point ===*/			
+
+TimeUnit	: SECOND {$$ = SECOND_T;} 
+			| MINUTE {$$ = MINUTE_T;} 
+			| HOUR {$$ = HOUR_T;} 
+			| DAY {$$ = DAY_T;} 
+			| WEEK {$$ = WEEK_T;} 
+			;
+
+Type		: TimeUnit {$$ = $1;} 	   
+		| INT {$$ = INT_T;}   	    /* int */
+		| BOOL {$$ = BOOL_T;} 	    /* bool */
+		;
+
+Exp		: LP Exp RP {
+						$$.type = $2.type;
+					} 	    /* ( x < 4 ) */
+
+/* Arithmetic Rules */					
+					
+		| Exp PLUS Exp {										
+							$$.type = arithmeticParse($1.type,$3.type,PLUS,$1.name,$3.name);
+							if ($$.type == ERROR_T)
+								YYABORT;
+					   }   /* a + b */
+		| Exp MINUS Exp {										
+							$$.type = arithmeticParse($1.type,$3.type,MINUS,$1.name,$3.name);
+							if ($$.type == ERROR_T)
+								YYABORT;							
+					    }   /* a - b */
+		| Exp MULT Exp  {										
+							$$.type = arithmeticParse($1.type,$3.type,MULT,$1.name,$3.name);
+							if ($$.type == ERROR_T)
+								YYABORT;							
+					    }    /* a * b */
+		| Exp DIV Exp   {										
+							$$.type = arithmeticParse($1.type,$3.type,DIV,$1.name,$3.name);
+							if ($$.type == ERROR_T)
+								YYABORT;							
+					    }     /* a / b */
+					    
+/* Type rules and var names */					    
+					    
+		| ID {
+				$$.name = std::string($1);
+				$$.type = varType($$.name);
+
+			  }	      	    /* a */
+		| NUM {$$.type = INT_T;}	    /* 4 */
+		| NUM TimeUnit {$$.type = $2;}   /* 4 NIS */
+		| TRUE {$$.type = BOOL_T;}	    /* True */
+		| FALSE	{ $$.type = BOOL_T;}	    /* False */
+		
+/* Boolean rules */
+		
+		| NOT Exp {
+						if ($2.type != BOOL_T)
+						{
+							output::errorMismatch(yylineno);
+							YYABORT;
+						}
+						else
+						{
+							$$.type = BOOL_T;
+						}						
+				  }	    /* not (x < 4) */
+		| Exp OR Exp {
+						if ($1.type != BOOL_T || $3.type != BOOL_T)
+						{
+							output::errorMismatch(yylineno);
+							YYABORT;
+						}
+						else
+						{
+							$$.type = BOOL_T;
+						}
+						
+					 }	    /* (x > 4) || (x < 5) */
+		| Exp AND Exp {
+						if ($1.type != BOOL_T || $3.type != BOOL_T)
+						{
+							output::errorMismatch(yylineno);
+							YYABORT;
+						}
+						else
+						{
+							$$.type = BOOL_T;
+						}		
+					  }    /* (x > 4) && (x < 5) */
+		| Exp Rel Exp %prec SE {
+									if (($1.type == INT_T && $3.type == INT_T)||
+										(isTimeUnit($1.type) && isTimeUnit($3.type)))
+
+									{
+										$$.type = BOOL_T;
+									}
+									else
+									{
+										output::errorMismatch(yylineno);
+										YYABORT;										
+									}
+									
+							   }    /* x < 4 */
+		;
+
+Rel		: GT {} /* > */
+		| GE {} /* >= */
+		| ST {} /* < */
+		| SE {} /* <= */
+		| EQ {} /* == */
+		| NEQ {} /* != */
+		;
+%%
+
+int main()
+{
+	/* Init */
+	globals = new ScopeGlobal();
+	globals->addScope(MAIN_S);
+
+	
+	//yydebug = 1;
+	
+	if (!yyparse())
+	{
+		dumpScope();
+	}
+	/* Clean-up */
+	delete globals;
+}
+
+int yyerror(char* message)
+{
+	if (strcmp(message,"syntax error") == 0)
+	{
+		output::errorSyn(yylineno);
+	}
+}
+
+VarType arithmeticParse(VarType lhs, VarType rhs,enum yytokentype op,std::string lname,std::string rname)
+{
+	if (lhs == ERROR_T)
+	{
+			output::errorUndef(yylineno,lname.c_str());
+			return ERROR_T;	
+	}
+	if (rhs == ERROR_T)
+	{
+			output::errorUndef(yylineno,rname.c_str());
+			return ERROR_T;	
+	}	
+	if (lhs == BOOL_T || rhs == BOOL_T)
+	{
+			output::errorMismatch(yylineno);
+			return ERROR_T;
+	}		
+		
+	switch(lhs)
+	{
+		case INT_T:		
+			if (rhs == INT_T)
+				return lhs;
+			if (op == MULT)
+				return rhs;
+			output::errorMismatch(yylineno);
+			return ERROR_T;
+			
+			break;
+		case SECOND_T:
+		case MINUTE_T:
+		case HOUR_T:
+		case DAY_T:
+		case WEEK_T:		
+			if (rhs == INT_T)
+			{
+				if(op == MULT || op == DIV)
+					return lhs;
+				output::errorMismatch(yylineno);
+				return ERROR_T;
+			}
+			if (rhs == SECOND_T || rhs == MINUTE_T || rhs == HOUR_T || rhs == DAY_T || rhs == WEEK_T)
+			{
+				if (op == DIV)
+					return INT_T;
+				if (op == MULT)
+				{
+					output::errorMismatch(yylineno);
+					return ERROR_T;				 	
+				}
+				return lhs;
+			}					
+			break;	
+			
+	}
+	
+	return lhs;
+
+}
+
+/*=== Globals API ===*/
+
+void addScope(ScopeType scopeT)
+{
+	globals->addScope(scopeT);
+}
+
+void dumpScope()
+{
+	//std::cout << yylineno << std::endl;
+	globals->dumpCurrentScope();
+}
+
+bool addVar(VarType varType, std::string idName)
+{
+	return globals->addVarToCurrentScope(varType,idName);	
+}
+
+bool varExists(std::string idName)
+{
+	return globals->varExistsInCurrentScope(idName);
+}
+
+VarType varType(std::string idName)
+{
+	return globals->getCurrentScopeVarType(idName);
+}
+
+bool isScopeCurlyWhile()
+{
+	globals->isCurrentScopeCurlyWhile();
+}
+
+void setCurlyBraces(bool curly)
+{
+	globals->setCurrentScopeCurly(curly);
+}
+
+bool isTimeUnit(VarType var)
+{	
+	return (var == SECOND_T || var == MINUTE_T || var == HOUR_T || var == DAY_T || var ==  WEEK_T);
+}
